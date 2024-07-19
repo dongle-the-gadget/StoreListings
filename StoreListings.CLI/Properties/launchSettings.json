@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "StoreListings.CLI": {
+      "commandName": "Project",
+      "commandLineArgs": "download 9WZDNCRFHVQM"
+    }
+  }
+}
