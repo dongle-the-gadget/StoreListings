@@ -23,8 +23,6 @@ public class DCATPackage
 
     public required Version Version { get; set; }
 
-    public required int PackageRank { get; set; }
-
     public required string PackageIdentity { get; set; }
 
     public required IEnumerable<FrameworkDependency> FrameworkDependencies { get; set; }
@@ -107,7 +105,6 @@ public class DCATPackage
 
                 packages.Add(new DCATPackage
                 {
-                    PackageRank = packageJson.GetProperty("PackageRank").GetInt32(),
                     WuCategoryId = packageJson.GetProperty("FulfillmentData").GetProperty("WuCategoryId").GetString()!,
                     Version = Version.FromWindowsRepresentation(ulong.Parse(packageJson.GetProperty("Version").GetString()!)),
                     FrameworkDependencies = frameworkDependencies,

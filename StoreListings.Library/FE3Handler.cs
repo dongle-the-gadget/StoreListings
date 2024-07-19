@@ -44,6 +44,8 @@ public static partial class FE3Handler
 
             public required Version Version { get; set; }
 
+            public required bool IsFramework { get; set; }
+
             public required IEnumerable<Platform> TargetPlatforms { get; set; }
         }
 
@@ -195,6 +197,7 @@ public static partial class FE3Handler
 
                     XElement extendedProperties = doc.Element("ExtendedProperties")!;
                     string packageIdentityName = extendedProperties.Attribute("PackageIdentityName")!.Value;
+                    bool isFramework = (bool)extendedProperties.Attribute("IsAppxFramework")!;
 
                     List<SyncUpdatesResponse.Update.Platform> platforms;
 
@@ -237,7 +240,8 @@ public static partial class FE3Handler
                             Digest = digest,
                             RevisionNumber = revisionNumber,
                             Version = Version.Parse(identifier.AsSpan()[firstIndex..][..secondIndex], null),
-                            TargetPlatforms = platforms
+                            TargetPlatforms = platforms,
+                            IsFramework = isFramework
                         });
                     }
                 }
