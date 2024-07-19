@@ -91,6 +91,8 @@ public class StoreEdgeFDProduct
                 !string.IsNullOrEmpty(des))
             {
                 int index = des.IndexOf(Environment.NewLine);
+                if (index == -1)
+                    index = des.IndexOf('\n');
                 description = index == -1 ? des : des[..index];
             }
 
