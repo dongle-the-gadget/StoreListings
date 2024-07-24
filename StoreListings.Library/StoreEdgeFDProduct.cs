@@ -90,7 +90,7 @@ public class StoreEdgeFDProduct
                 desJson.GetString() is string des &&
                 !string.IsNullOrEmpty(des))
             {
-                int index = des.IndexOf(Environment.NewLine);
+                int index = des.IndexOf("\r\n");
                 if (index == -1)
                     index = des.IndexOf('\n');
                 description = index == -1 ? des : des[..index];
