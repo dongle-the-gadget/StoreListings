@@ -87,7 +87,7 @@ public class Commands
                     return;
                 }
 
-                Result<FE3Handler.Cookie> cookieResult = (await FE3Handler.GetCookieAsync(cancellationToken));
+                Result<FE3Handler.Cookie> cookieResult = await FE3Handler.GetCookieAsync(cancellationToken);
                 if (!cookieResult.IsSuccess)
                 {
                     WriteError(cookieResult.Exception, "getting Windows Update cookies");
