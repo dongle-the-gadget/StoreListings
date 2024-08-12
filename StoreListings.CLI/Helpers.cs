@@ -6,14 +6,12 @@ internal static class Helpers
 {
     public static void WriteLoadingProgressBar()
     {
-        ReadOnlySpan<byte> loadingProc = [0x1B, 0x00, 0x5D, 0x00, 0x39, 0x00, 0x3B, 0x00, 0x34, 0x00, 0x3B, 0x00, 0x33, 0x00, 0x3B, 0x00, 0x30, 0x00, 0x7, 0x00];
-        Console.Out.Write(MemoryMarshal.Cast<byte, char>(loadingProc));
+        Console.WriteLine("\x1b]9;4;3;0\x07");
     }
 
     public static void HideProgressBar()
     {
-        ReadOnlySpan<byte> loadingProc = [0x1B, 0x00, 0x5D, 0x00, 0x39, 0x00, 0x3B, 0x00, 0x34, 0x00, 0x3B, 0x00, 0x30, 0x00, 0x3B, 0x00, 0x30, 0x00, 0x7, 0x00];
-        Console.Out.Write(MemoryMarshal.Cast<byte, char>(loadingProc));
+        Console.WriteLine("\x1b]9;4;0;0\x07");
     }
 
     public static void WriteError(Exception exception, string action)
