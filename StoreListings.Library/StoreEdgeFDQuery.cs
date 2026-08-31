@@ -22,57 +22,33 @@ public class StoreEdgeFDQuery
         DeviceFamily deviceFamily,
         Market market,
         Lang language,
-        MediaTypeRecommendation mediaType = MediaTypeRecommendation.All,
+        MediaTypeRecommendation mediaType = MediaTypeRecommendation.Apps,
         int skipItems = 0,
         int pageSize = 20,
         CancellationToken cancellationToken = default
     )
     {
         HttpClient client = Helpers.GetStoreHttpClient();
-
-        var mediaTypeString = mediaType.ToString();
-        if (mediaType == MediaTypeRecommendation.All)
-        {
-            mediaTypeString = "";
-        }
+        string url =
+            $"https://storeedgefd.dsx.mp.microsoft.com/v9.0/recommendations/collections/{category}?market={market}&locale={language}-{market}&deviceFamily=Windows.{deviceFamily}&mediaType={mediaType}&pageSize={pageSize}&skipItems={skipItems}";
 
         try
         {
-            string url =
-                $"https://storeedgefd.dsx.mp.microsoft.com/v9.0/recommendations/collections/{category}?market={market}&locale={language}-{market}&deviceFamily=Windows.{deviceFamily}&mediaType={mediaTypeString}&pageSize={pageSize}&skipItems={skipItems}";
             using HttpResponseMessage response = await client.GetAsync(url, cancellationToken);
-            JsonDocument? json = null;
-            try
-            {
-                json = await JsonDocument.ParseAsync(
-                    await response.Content.ReadAsStreamAsync(),
-                    cancellationToken: cancellationToken
-                );
-            }
-            catch
-            {
-                response.EnsureSuccessStatusCode();
-            }
+            response.EnsureSuccessStatusCode();
 
-            using JsonDocument jsondoc = json!;
+            using JsonDocument json = await JsonDocument.ParseAsync(
+                await response.Content.ReadAsStreamAsync(cancellationToken),
+                cancellationToken: cancellationToken
+            );
 
-            if (!response.IsSuccessStatusCode)
+            var cardsElement = json.RootElement.GetPropertySafe("Payload").GetPropertySafe("Cards");
+
+            if (cardsElement.ValueKind == JsonValueKind.Array)
             {
-                return Result<StoreEdgeFDQuery>.Failure(
-                    new Exception(jsondoc.RootElement.GetProperty("message").GetString())
-                );
+                return Result<StoreEdgeFDQuery>.Success(new(Helpers.GetCards(cardsElement)));
             }
 
-            JsonElement payloadElement = jsondoc.RootElement.GetProperty("Payload");
-            JsonElement cardsElement = payloadElement.GetProperty("Cards");
-
-            if (
-                payloadElement.TryGetProperty("Cards", out JsonElement cardElement)
-                && cardElement.GetArrayLength() >= 1
-            )
-            {
-                return Result<StoreEdgeFDQuery>.Success(new(Helpers.GetCards(cardElement)));
-            }
             return Result<StoreEdgeFDQuery>.Success(new StoreEdgeFDQuery(new List<Card>()));
         }
         catch (Exception ex)
@@ -94,51 +70,29 @@ public class StoreEdgeFDQuery
     {
         HttpClient client = Helpers.GetStoreHttpClient();
 
-        string filters = $"PriceType%3d{priceType}";
-        if (priceType == PriceType.All)
-        {
-            filters = "";
-        }
-
-        // cursor is a base64 url encoded string of length 35
+        string filters = priceType == PriceType.All ? "" : $"PriceType%3d{priceType}";
         var randomString = Helpers.GenerateRandomString(21 - skipItems.ToString().Length);
         var base64string = Helpers.ToBase64Url($"o={skipItems}&s={randomString}");
 
+        string url =
+            $"https://storeedgefd.dsx.mp.microsoft.com/v9.0/search?query={query}&market={market}&locale={language}-{market}&deviceFamily=Windows.{deviceFamily}&mediaType={mediaType}&filters={filters}&cursor={base64string}%3d";
+
         try
         {
-            string url =
-                $"https://storeedgefd.dsx.mp.microsoft.com/v9.0/search?query={query}&market={market}&locale={language}-{market}&deviceFamily=Windows.{deviceFamily}&mediaType={mediaType}&filters={filters}&cursor={base64string}%3d";
             using HttpResponseMessage response = await client.GetAsync(url, cancellationToken);
-            JsonDocument? json = null;
-            try
-            {
-                json = await JsonDocument.ParseAsync(
-                    await response.Content.ReadAsStreamAsync(),
-                    cancellationToken: cancellationToken
-                );
-            }
-            catch
-            {
-                response.EnsureSuccessStatusCode();
-            }
-
-            using JsonDocument jsondoc = json!;
-
-            if (!response.IsSuccessStatusCode)
-            {
-                return Result<StoreEdgeFDQuery>.Failure(
-                    new Exception(jsondoc.RootElement.GetProperty("message").GetString())
-                );
-            }
-
-            JsonElement payloadElement = jsondoc.RootElement.GetProperty("Payload");
-
+            response.EnsureSuccessStatusCode();
+            using JsonDocument json = await JsonDocument.ParseAsync(
+                await response.Content.ReadAsStreamAsync(),
+                cancellationToken: cancellationToken
+            );
+            JsonElement payload = json.RootElement.GetPropertySafe("Payload");
             if (
-                payloadElement.TryGetProperty("SearchResults", out JsonElement searchElement)
-                && searchElement.GetArrayLength() >= 1
+                payload.ValueKind != JsonValueKind.Undefined
+                && payload.TryGetProperty("SearchResults", out JsonElement searchResults)
+                && searchResults.GetArrayLength() > 0
             )
             {
-                return Result<StoreEdgeFDQuery>.Success(new(Helpers.GetCards(searchElement)));
+                return Result<StoreEdgeFDQuery>.Success(new(Helpers.GetCards(searchResults)));
             }
             return Result<StoreEdgeFDQuery>.Success(new StoreEdgeFDQuery(new List<Card>()));
         }
@@ -156,54 +110,54 @@ public class StoreEdgeFDQuery
         CancellationToken cancellationToken = default
     )
     {
-        HttpClient client = Helpers.GetStoreHttpClient();
-
         try
         {
+            HttpClient client = Helpers.GetStoreHttpClient();
             string url =
-                $"https://storeedgefd.dsx.mp.microsoft.com/v9.0/products/{productId}/BundleParts?&market={market}&locale={language}-{market}&deviceFamily=Windows.{deviceFamily}";
-            using HttpResponseMessage response = await client.GetAsync(url, cancellationToken);
-            JsonDocument? json = null;
-            try
-            {
-                json = await JsonDocument.ParseAsync(
-                    await response.Content.ReadAsStreamAsync(),
-                    cancellationToken: cancellationToken
-                );
-            }
-            catch
-            {
-                response.EnsureSuccessStatusCode();
-            }
+                $"https://storeedgefd.dsx.mp.microsoft.com/v9.0/products/{productId}/BundleParts?market={market}&locale={language}-{market}&deviceFamily=Windows.{deviceFamily}";
 
-            using JsonDocument jsondoc = json!;
+            using HttpResponseMessage response = await client.GetAsync(url, cancellationToken);
 
             if (!response.IsSuccessStatusCode)
             {
-                return Result<StoreEdgeFDQuery>.Failure(
-                    new Exception(jsondoc.RootElement.GetProperty("message").GetString())
-                );
+                try
+                {
+                    using var errorDoc = await JsonDocument.ParseAsync(
+                        await response.Content.ReadAsStreamAsync(),
+                        cancellationToken: cancellationToken
+                    );
+                    string msg = errorDoc.RootElement.GetStringSafe("message");
+                    return Result<StoreEdgeFDQuery>.Failure(
+                        new Exception(!string.IsNullOrEmpty(msg) ? msg : response.ReasonPhrase)
+                    );
+                }
+                catch
+                {
+                    response.EnsureSuccessStatusCode();
+                }
             }
 
-            JsonElement payloadElement = jsondoc.RootElement.GetProperty("Payload");
-            if (
-                payloadElement.TryGetProperty("0017", out JsonElement _0017Element)
-                && _0017Element.GetProperty("Products").GetArrayLength() >= 1
-            )
+            using var json = await JsonDocument.ParseAsync(
+                await response.Content.ReadAsStreamAsync(),
+                cancellationToken: cancellationToken
+            );
+            JsonElement payload = json.RootElement.GetPropertySafe("Payload");
+            string[] preferredBundles = ["0017", "0010"];
+
+            foreach (var bundleId in preferredBundles)
             {
-                return Result<StoreEdgeFDQuery>.Success(
-                    new(Helpers.GetCards(_0017Element.GetProperty("Products")))
-                );
+                JsonElement bundle = payload.GetPropertySafe(bundleId);
+                if (bundle.ValueKind == JsonValueKind.Object)
+                {
+                    JsonElement products = bundle.GetPropertySafe("Products");
+
+                    if (products.ValueKind == JsonValueKind.Array && products.GetArrayLength() >= 1)
+                    {
+                        return Result<StoreEdgeFDQuery>.Success(new(Helpers.GetCards(products)));
+                    }
+                }
             }
-            else if (
-                payloadElement.TryGetProperty("0010", out JsonElement _0010Element)
-                && _0010Element.GetProperty("Products").GetArrayLength() >= 1
-            )
-            {
-                return Result<StoreEdgeFDQuery>.Success(
-                    new(Helpers.GetCards(_0010Element.GetProperty("Products")))
-                );
-            }
+
             return Result<StoreEdgeFDQuery>.Success(new StoreEdgeFDQuery(new List<Card>()));
         }
         catch (Exception ex)

@@ -1,17 +1,43 @@
-﻿namespace StoreListings.Library;
+namespace StoreListings.Library;
 
 /// <summary>
-/// Represents categories used for recommendations.
+/// Represents different types of store identifiers.
 /// </summary>
+public enum StoreIdType
+{
+    ProductId,
+    PackageFamilyName,
+}
+
+/// <summary>
+/// Represents diffrent device architecure for FE3.
+/// </summary>
+///
+public enum FE3OSArch
+{
+    AMD64,
+    X86,
+    ARM64,
+}
+
+/// <summary>
+/// Represents diffrent device architecure for StoreEdge.
+/// </summary>
+///
+public enum StoreEdgeFDArch
+{
+    X64,
+    X86,
+    ARM64,
+}
+
 public enum Category
 {
     TopFree,
     TopPaid,
-    BestRated,
+    TopTrending,
     Deal,
-    NewAndRising,
     TopGrossing,
-    Mostpopular,
 }
 
 /// <summary>
@@ -33,7 +59,6 @@ public enum MediaTypeSearch
 /// </summary>
 public enum MediaTypeRecommendation
 {
-    All,
     Apps,
     Games,
 }

@@ -1,4 +1,4 @@
-﻿namespace StoreListings.CLI;
+namespace StoreListings.CLI;
 
 internal static class Helpers
 {

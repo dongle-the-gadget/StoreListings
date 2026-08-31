@@ -13,6 +13,7 @@ public sealed class Card(
     string title,
     string? displayPrice,
     double? averageRating,
+    InstallerType installerType,
     Image image
 )
 {
@@ -20,5 +21,18 @@ public sealed class Card(
     public string Title { get; } = title;
     public string? DisplayPrice { get; } = displayPrice;
     public double? AverageRating { get; } = averageRating;
+    public InstallerType InstallerType { get; } = installerType;
     public Image Image { get; } = image;
+}
+
+public sealed class DownloadResource(string url, string digest)
+{
+    public string Url { get; } = url;
+    public string Digest { get; } = digest;
+}
+
+public sealed class PackageDownloadInfo(DownloadResource package, DownloadResource? blockmapCab)
+{
+    public DownloadResource Package { get; } = package;
+    public DownloadResource? BlockmapCab { get; } = blockmapCab;
 }

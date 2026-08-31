@@ -1,4 +1,5 @@
-﻿using ConsoleAppFramework;
+using System.Linq;
+using ConsoleAppFramework;
 using StoreListings.Library;
 using static StoreListings.CLI.Helpers;
 
@@ -309,19 +310,6 @@ public class Commands
                     return;
                 }
 
-                if (
-                    !packageResult.Value.Any(f =>
-                        f.PlatformDependencies.Any(f => f.MinVersion <= OSVersion.Value)
-                    )
-                )
-                {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("No applicable packages were found for your OS options.");
-                    Console.ResetColor();
-                    HideProgressBar();
-                    return;
-                }
-
                 Result<FE3Handler.Cookie> cookieResult = await FE3Handler.GetCookieAsync(
                     cancellationToken
                 );
@@ -353,7 +341,7 @@ public class Commands
 
                 foreach (FE3Handler.SyncUpdatesResponse.Update update in fe3sync.Value.Updates)
                 {
-                    Result<string> fileUrlResult = await FE3Handler.GetFileUrl(
+                    var fileUrlResult = await FE3Handler.GetPackageDownloadInfo(
                         fe3sync.Value.NewCookie,
                         update.UpdateID,
                         update.RevisionNumber,
@@ -375,16 +363,20 @@ public class Commands
                         );
                         return;
                     }
-                    updatesAndUrl.Add((update, fileUrlResult.Value));
+                    updatesAndUrl.Add((update, fileUrlResult.Value.Package.Url));
                 }
 
                 int printedPackages = 0;
 
+                // FE3's bundle tree is the source of truth: each binary version declares
+                // its own exact framework dependencies. Map every package URL by UpdateID
+                // so resolved dependencies can be looked up.
+                Dictionary<string, string> urlByUpdateId = new(StringComparer.OrdinalIgnoreCase);
+                foreach (var (depUpdate, depUrl) in updatesAndUrl)
+                    urlByUpdateId.TryAdd(depUpdate.UpdateID, depUrl);
+
                 foreach (
-                    (
-                        FE3Handler.SyncUpdatesResponse.Update Update,
-                        string Url
-                    ) update in updatesAndUrl
+                    var update in updatesAndUrl
                         .Where(f => !f.Update.IsFramework)
                         .OrderByDescending(f => f.Update.Version)
                 )
@@ -397,73 +389,6 @@ public class Commands
                     )
                         continue;
 
-                    bool frameworkDependencyApplicable = true;
-
-                    DCATPackage? package = packageResult.Value.FirstOrDefault(f =>
-                        f.PackageIdentity.Equals(
-                            update.Update.PackageIdentityName,
-                            StringComparison.OrdinalIgnoreCase
-                        )
-                        && f.Version == update.Update.Version
-                    );
-
-                    IEnumerable<(
-                        FE3Handler.SyncUpdatesResponse.Update Update,
-                        string Url
-                    )> dependencyList = Array.Empty<(
-                        FE3Handler.SyncUpdatesResponse.Update Update,
-                        string Url
-                    )>();
-
-                    if (package is not null)
-                    {
-                        dependencyList = new List<(
-                            FE3Handler.SyncUpdatesResponse.Update Update,
-                            string Url
-                        )>(package.PlatformDependencies.Count() * 4);
-
-                        foreach (
-                            DCATPackage.FrameworkDependency dependency in package.FrameworkDependencies
-                        )
-                        {
-                            var applicableDependencyFiles = updatesAndUrl.Where(dep =>
-                                dep.Update.PackageIdentityName.Equals(
-                                    dependency.PackageIdentity,
-                                    StringComparison.OrdinalIgnoreCase
-                                )
-                                && dep.Update.Version >= dependency.MinVersion
-                                && dep.Update.TargetPlatforms.Any(platform =>
-                                    platform.MinVersion <= OSVersion.Value
-                                    && (
-                                        platform.Family == DeviceFamily.Universal
-                                        || platform.Family == deviceFamily
-                                    )
-                                )
-                            );
-
-                            if (!applicableDependencyFiles.Any())
-                            {
-                                // The package has unapplicable dependency (meaning it's impossible to install the dependency), ignore the file;
-                                frameworkDependencyApplicable = false;
-                                break;
-                            }
-
-                            // Get the latest version of the dependency
-                            (
-                                (List<(FE3Handler.SyncUpdatesResponse.Update Update, string Url)>)
-                                    dependencyList
-                            ).AddRange(
-                                applicableDependencyFiles
-                                    .GroupBy(f => f.Update.Version)
-                                    .OrderByDescending(f => f.Key)
-                                    .First()
-                            );
-                        }
-
-                        if (!frameworkDependencyApplicable)
-                            continue; // There are unapplicable dependencies, ignore the file.
-                    }
-
                     printedPackages++;
 
                     Console.WriteLine();
@@ -475,33 +400,27 @@ public class Commands
                     Console.WriteLine(update.Url);
                     Console.WriteLine();
 
-                    if (package is not null)
+                    // Resolve this exact binary's dependencies from the FE3 bundle tree.
+                    IReadOnlyList<FE3Handler.SyncUpdatesResponse.Update> dependencies =
+                        fe3sync.Value.ResolveDependencies(update.Update);
+
+                    if (dependencies.Count > 0)
                     {
                         Console.ForegroundColor = ConsoleColor.White;
                         Console.WriteLine("Dependencies:");
                         Console.WriteLine();
 
-                        foreach (
-                            (
-                                FE3Handler.SyncUpdatesResponse.Update Update,
-                                string Url
-                            ) dependencyFile in dependencyList
-                        )
+                        foreach (FE3Handler.SyncUpdatesResponse.Update dep in dependencies)
                         {
                             Console.ForegroundColor = ConsoleColor.White;
-                            Console.WriteLine(dependencyFile.Update.FileName);
+                            Console.WriteLine(dep.FileName);
                             Console.ResetColor();
-                            Console.WriteLine(dependencyFile.Url);
+                            if (urlByUpdateId.TryGetValue(dep.UpdateID, out string? dependencyUrl))
+                                Console.WriteLine(dependencyUrl);
+                            else
+                                Console.WriteLine($"// missing dependency {dep.UpdateID}");
                         }
                         Console.WriteLine();
-                        Console.ResetColor();
-                    }
-                    else
-                    {
-                        Console.ForegroundColor = ConsoleColor.Red;
-                        Console.WriteLine(
-                            $"Failed to get dependencies for version {update.Update.Version}"
-                        );
                         Console.ResetColor();
                     }
 
@@ -517,23 +436,49 @@ public class Commands
                 break;
 
             case InstallerType.Unpackaged:
-                Result<(string InstallerUrl, string InstallerSwitches)> unpackagedResult =
-                    await product.GetUnpackagedInstall(market, language, cancellationToken);
+                var unpackagedResult = await StoreEdgeFDProduct.GetUnpackagedInstall(
+                    productId,
+                    market,
+                    cancellationToken
+                );
                 if (!unpackagedResult.IsSuccess)
                 {
                     WriteError(unpackagedResult.Exception, "getting unpackaged install");
                     return;
                 }
+                foreach (
+                    var (
+                        InstallerUrl,
+                        FileName,
+                        InstallerSwitches,
+                        Version,
+                        InstallerSha256,
+                        arch,
+                        locale
+                    ) in unpackagedResult.Value
+                )
+                {
+                    Console.WriteLine();
+                    Console.ForegroundColor = ConsoleColor.Blue;
+                    Console.WriteLine(Version);
+                    Console.ForegroundColor = ConsoleColor.White;
+                    Console.WriteLine($"Installer file ({FileName}):");
+                    Console.ResetColor();
+                    Console.WriteLine(InstallerUrl);
+                    Console.WriteLine();
+                    Console.WriteLine("Silent switches:");
+                    Console.WriteLine(InstallerSwitches);
+                    Console.WriteLine();
+                    Console.WriteLine("SHA256:");
+                    Console.WriteLine(InstallerSha256);
+                    Console.WriteLine();
+                    Console.WriteLine("arch:");
+                    Console.WriteLine(arch);
+                    Console.WriteLine();
+                    Console.WriteLine("Locale:");
+                    Console.WriteLine(locale);
+                }
 
-                Console.ForegroundColor = ConsoleColor.Blue;
-                Console.WriteLine("Installer URL:");
-                Console.ResetColor();
-                Console.WriteLine(unpackagedResult.Value.InstallerUrl);
-                Console.WriteLine();
-                Console.ForegroundColor = ConsoleColor.Blue;
-                Console.WriteLine("Installer silent switches:");
-                Console.ResetColor();
-                Console.WriteLine(unpackagedResult.Value.InstallerSwitches);
                 break;
 
             case InstallerType.Unknown:
@@ -544,5 +489,288 @@ public class Commands
         }
 
         HideProgressBar();
+    }
+
+    /// <summary>
+    /// Query packages for a product from the Display Catalog.
+    /// </summary>
+    /// <param name="productId">The product ID to query.</param>
+    /// <param name="market">-m, The store market/region to query from.</param>
+    /// <param name="language">-l, The language, for listings that use localization.</param>
+    public async Task QueryPackages(
+        [Argument] string productId,
+        CancellationToken cancellationToken,
+        Market market = Market.US,
+        Lang language = Lang.en
+    )
+    {
+        WriteLoadingProgressBar();
+        Result<IEnumerable<DCATPackage>> result = await DCATPackage.GetPackagesAsync(
+            productId,
+            market,
+            language,
+            true
+        );
+        HideProgressBar();
+        if (result.IsSuccess)
+        {
+            foreach (var package in result.Value)
+            {
+                WriteField("Product ID", package.ProductId ?? "Missing");
+                WriteField("Title", package.Title ?? "Missing");
+                WriteField("Short Description", package.ShortDescription ?? "Missing");
+                WriteField("Description", package.Description ?? "Missing");
+                WriteField("Publisher", package.PublisherName ?? "Missing");
+                WriteField("Revision ID", package.RevisionId ?? "Missing");
+                WriteField("Average rating", package.Rating.ToString() ?? "Missing");
+                WriteField("Rating count", package.RatingCount.ToString() ?? "Missing");
+                WriteField("Size", package.Size?.ToString() ?? "Missing");
+                WriteField("Is Bundle", package.IsBundle.ToString());
+                WriteField("Package Family Name", package.PackageFamilyName ?? "Missing");
+                WriteField("Package Name", package.PackageFullName ?? "Missing");
+                WriteField("Logo", package.Logo?.Url ?? "Missing");
+                WriteField("Screenshots", package.Screenshots.Count.ToString());
+                foreach (var screenshot in package.Screenshots)
+                {
+                    Console.WriteLine(screenshot.Url);
+                }
+                WriteField("Version", package.AppVersion.ToString());
+                WriteField("WuCategoryId", package.WuCategoryId);
+                WriteField(
+                    "Platform Dependencies",
+                    string.Join(
+                        ", ",
+                        (
+                            package.PlatformDependencies
+                            ?? Enumerable.Empty<DCATPackage.PlatformDependency>()
+                        ).Select(p => $"{p.Platform}: {p.MinVersion}")
+                    )
+                );
+                WriteField(
+                    "Framework Dependencies",
+                    string.Join(
+                        ", ",
+                        (
+                            package.FrameworkDependencies
+                            ?? Enumerable.Empty<DCATPackage.FrameworkDependency>()
+                        ).Select(f => $"{f.PackageIdentity}: {f.MinVersion}")
+                    )
+                );
+                Console.WriteLine();
+            }
+        }
+        else
+        {
+            Console.WriteLine(result.Exception);
+        }
+    }
+
+    /// <summary>
+    /// Query a product page details from Microsoft Store.
+    /// </summary>
+    /// <param name="productId">The product ID of the product to query.</param>
+    /// <param name="architecture">The architecture (e.g. x64, x86, arm64).</param>
+    /// <param name="market">-m, The store market/region to query from.</param>
+    /// <param name="language">-l, The language, for listings that use localization.</param>
+    public async Task QueryPage(
+        [Argument] string productId,
+        CancellationToken cancellationToken,
+        StoreEdgeFDArch architecture = StoreEdgeFDArch.X64,
+        Market market = Market.US,
+        Lang language = Lang.en
+    )
+    {
+        WriteLoadingProgressBar();
+        Result<StoreEdgeFDPage> result = await StoreEdgeFDPage.GetProductAsync(
+            productId,
+            architecture,
+            market,
+            language,
+            cancellationToken
+        );
+        HideProgressBar();
+        if (result.IsSuccess)
+        {
+            StoreEdgeFDPage page = result.Value;
+            WriteField("Product ID", page.ProductId);
+            WriteField("Title", page.Title);
+            WriteField("Logo", page.Logo.Url);
+            WriteField("Screenshots", page.Screenshots.Count.ToString());
+            foreach (var screenshot in page.Screenshots)
+            {
+                Console.WriteLine(screenshot.Url);
+            }
+            WriteField("Short Description", page.ShortDescription);
+            WriteField("Description", page.Description);
+            WriteField("Publisher", page.PublisherName);
+            WriteField("Average rating", page.Rating.ToString());
+            WriteField("Rating count", page.RatingCount.ToString());
+            if (page.Size.HasValue)
+                WriteField("Size", page.Size.Value.ToString());
+            WriteField("Installer Type", page.InstallerType.ToString());
+            if (page.PackageFamilyName is not null)
+                WriteField("Package Family Name", page.PackageFamilyName);
+            if (page.LastUpdateDate.HasValue)
+                WriteField("Last Update Date", page.LastUpdateDate.Value.ToString());
+            if (page.Version is not null)
+                WriteField("Version", page.Version);
+        }
+        else
+        {
+            Console.WriteLine(result.Exception);
+        }
+    }
+
+    /// <summary>
+    /// Query multiple products by ID type from Microsoft Store.
+    /// </summary>
+    /// <param name="idType">The type of product ID (e.g. ProductId, LegacyId, etc).</param>
+    /// <param name="productIds">A list of product IDs to query.</param>
+    /// <param name="deviceFamily">-d, The device family.</param>
+    /// <param name="market">-m, The store market/region to query from.</param>
+    /// <param name="language">-l, The language, for listings that use localization.</param>
+    public async Task QueryProductsByIdType(
+        [Argument] StoreIdType idType,
+        [Argument] string productIds,
+        CancellationToken cancellationToken,
+        DeviceFamily deviceFamily = DeviceFamily.Desktop,
+        Market market = Market.US,
+        Lang language = Lang.en
+    )
+    {
+        var productIdList = productIds
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+        WriteLoadingProgressBar();
+        var result = await StoreEdgeFDProduct.GetProductsByIdTypeAsync(
+            productIdList,
+            idType,
+            deviceFamily,
+            market,
+            language,
+            cancellationToken
+        );
+        HideProgressBar();
+        if (result.IsSuccess)
+        {
+            foreach (var product in result.Value)
+            {
+                WriteField("Product ID", product.ProductId);
+                WriteField("Title", product.Title);
+                WriteField("Publisher", product.PublisherName);
+                WriteField("Revision ID", product.RevisionId);
+                WriteField("Average rating", product.Rating.ToString());
+                WriteField("Rating count", product.RatingCount.ToString());
+                WriteField("Size", product.Size.ToString());
+                WriteField("Is Bundle", product.IsBundle.ToString());
+                WriteField("Installer Type", product.InstallerType.ToString());
+                WriteField("Logo", product.Logo.Url);
+                WriteField("Screenshots", product.Screenshots.Count.ToString());
+                foreach (var screenshot in product.Screenshots)
+                {
+                    Console.WriteLine(screenshot.Url);
+                }
+                if (!string.IsNullOrEmpty(product.ShortDescription))
+                    WriteField("Short Description", product.ShortDescription);
+                if (!string.IsNullOrEmpty(product.Description))
+                    WriteField("Description", product.Description);
+                if (!string.IsNullOrEmpty(product.PackageFamilyName))
+                    WriteField("Package Family Name", product.PackageFamilyName);
+                Console.WriteLine();
+            }
+        }
+        else
+        {
+            Console.WriteLine(result.Exception);
+        }
+    }
+
+    /// <summary>
+    /// Query multiple packages from the Display Catalog using a comma-separated list of package IDs.
+    /// </summary>
+    /// <param name="packageIds">A list of package IDs to query (comma-separated).</param>
+    /// <param name="market">-m, The store market/region to query from.</param>
+    /// <param name="language">-l, The language, for listings that use localization.</param>
+    public async Task QueryMultiplePackages(
+        [Argument] string packageIds,
+        CancellationToken cancellationToken,
+        Market market = Market.US,
+        Lang language = Lang.en
+    )
+    {
+        var packageIdList = packageIds
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+        WriteLoadingProgressBar();
+        Result<IEnumerable<DCATPackage.DCATProduct>> result =
+            await DCATPackage.GetMultiplePackagesAsync(
+                packageIdList,
+                market,
+                language,
+                true,
+                cancellationToken
+            );
+        HideProgressBar();
+        if (result.IsSuccess)
+        {
+            var products = result.Value.ToList();
+            var productCount = products.Count;
+            var packageCount = products
+                .SelectMany(p => p.Packages ?? Enumerable.Empty<DCATPackage>())
+                .Count();
+            Console.WriteLine($"products: {productCount}, packages: {packageCount}");
+
+            foreach (var product in products)
+            {
+                WriteField("Product ID", product.ProductId ?? "Missing");
+                foreach (var package in product.Packages ?? Enumerable.Empty<DCATPackage>())
+                {
+                    WriteField("Title", package.Title ?? "Missing");
+                    WriteField("Short Description", package.ShortDescription ?? "Missing");
+                    WriteField("Description", package.Description ?? "Missing");
+                    WriteField("Publisher", package.PublisherName ?? "Missing");
+                    WriteField("Revision ID", package.RevisionId ?? "Missing");
+                    WriteField("Average rating", package.Rating.ToString() ?? "Missing");
+                    WriteField("Rating count", package.RatingCount.ToString() ?? "Missing");
+                    WriteField("Size", package.Size?.ToString() ?? "Missing");
+                    WriteField("Is Bundle", package.IsBundle.ToString());
+                    WriteField("Package Family Name", package.PackageFamilyName ?? "Missing");
+                    WriteField("Package Name", package.PackageFullName ?? "Missing");
+                    WriteField("Logo", package.Logo?.Url ?? "Missing");
+                    WriteField("Screenshots", package.Screenshots.Count.ToString());
+                    foreach (var screenshot in package.Screenshots)
+                    {
+                        Console.WriteLine(screenshot.Url);
+                    }
+                    WriteField("Version", package.AppVersion?.ToString() ?? "Missing");
+                    WriteField("WuCategoryId", package.WuCategoryId);
+                    WriteField(
+                        "Platform Dependencies",
+                        string.Join(
+                            ", ",
+                            (
+                                package.PlatformDependencies
+                                ?? Enumerable.Empty<DCATPackage.PlatformDependency>()
+                            ).Select(p => $"{p.Platform}: {p.MinVersion}")
+                        )
+                    );
+                    WriteField(
+                        "Framework Dependencies",
+                        string.Join(
+                            ", ",
+                            (
+                                package.FrameworkDependencies
+                                ?? Enumerable.Empty<DCATPackage.FrameworkDependency>()
+                            ).Select(f => $"{f.PackageIdentity}: {f.MinVersion}")
+                        )
+                    );
+                    Console.WriteLine();
+                }
+            }
+        }
+        else
+        {
+            Console.WriteLine(result.Exception);
+        }
     }
 }

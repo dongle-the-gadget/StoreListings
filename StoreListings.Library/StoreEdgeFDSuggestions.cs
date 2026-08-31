@@ -6,11 +6,14 @@ namespace StoreListings.Library;
 
 public class StoreEdgeFDSuggestions
 {
-    /// <summary>
-    /// list of cards and suggestions returned by the query.
-    /// </summary>
-    public List<string> Suggestions { get; set; }
-    public required List<Card> Cards { get; set; }
+    public List<string> Suggestions
+    {
+        get; set;
+    }
+    public required List<Card> Cards
+    {
+        get; set;
+    }
 
     [SetsRequiredMembers]
     private StoreEdgeFDSuggestions(List<Card> cards, List<string> suggestions)
@@ -28,61 +31,37 @@ public class StoreEdgeFDSuggestions
     )
     {
         HttpClient client = Helpers.GetStoreHttpClient();
+        string url =
+            $"https://storeedgefd.dsx.mp.microsoft.com/v9.0/autosuggest?prefix={query}&market={market}&locale={language}-{market}&deviceFamily=Windows.{deviceFamily}";
 
         try
         {
-            string url =
-                $"https://storeedgefd.dsx.mp.microsoft.com/v9.0/autosuggest?prefix={query}&market={market}&locale={language}-{market}&deviceFamily=Windows.{deviceFamily}";
             using HttpResponseMessage response = await client.GetAsync(url, cancellationToken);
-            JsonDocument? json = null;
-            try
-            {
-                json = await JsonDocument.ParseAsync(
-                    await response.Content.ReadAsStreamAsync(),
-                    cancellationToken: cancellationToken
-                );
-            }
-            catch
-            {
-                response.EnsureSuccessStatusCode();
-            }
+            response.EnsureSuccessStatusCode(); // Standard check
 
-            using JsonDocument jsondoc = json!;
+            using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using JsonDocument jsonDoc = await JsonDocument.ParseAsync(
+                stream,
+                cancellationToken: cancellationToken
+            );
 
-            if (!response.IsSuccessStatusCode)
+            if (!jsonDoc.RootElement.TryGetProperty("Payload", out JsonElement payload))
             {
                 return Result<StoreEdgeFDSuggestions>.Failure(
-                    new Exception(jsondoc.RootElement.GetProperty("message").GetString())
+                    new Exception("Response missing 'Payload'")
                 );
             }
 
-            JsonElement payloadElement = jsondoc.RootElement.GetProperty("Payload");
-            if (
-                (
-                    payloadElement.TryGetProperty(
-                        "AssetSuggestions",
-                        out JsonElement suggestionCards
-                    )
-                    && suggestionCards.GetArrayLength() >= 1
-                )
-                && (
-                    payloadElement.TryGetProperty("SearchSuggestions", out JsonElement suggestions)
-                    && suggestions.GetArrayLength() >= 1
-                )
-            )
-            {
-                List<string> suggestionsList =
-                [
-                    .. suggestions
-                        .EnumerateArray()
-                        .Select(item => item.GetString())
-                        .Where(item => !string.IsNullOrEmpty(item)),
-                ];
-                return Result<StoreEdgeFDSuggestions>.Success(
-                    new(Helpers.GetCards(suggestionCards), suggestionsList)
-                );
-            }
-            return Result<StoreEdgeFDSuggestions>.Success(new StoreEdgeFDSuggestions([], []));
+            List<string> suggestions = payload
+                .GetArraySafe("SearchSuggestions")
+                .EnumerateArray()
+                .Select(x => x.GetString())
+                .Where(x => !string.IsNullOrEmpty(x))
+                .ToList()!;
+
+            List<Card> cards = Helpers.GetCards(payload.GetArraySafe("AssetSuggestions"));
+
+            return Result<StoreEdgeFDSuggestions>.Success(new(cards, suggestions));
         }
         catch (Exception ex)
         {

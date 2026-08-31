@@ -2,7 +2,7 @@
   "profiles": {
     "StoreListings.CLI": {
       "commandName": "Project",
-      "commandLineArgs": "query-suggestions netfl"
+      "commandLineArgs": "download XPDP273C0XHQH2"
     }
   }
-}
+} 
